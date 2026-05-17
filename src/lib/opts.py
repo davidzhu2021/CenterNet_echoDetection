@@ -9,6 +9,15 @@ import sys
 class opts(object):
   def __init__(self):
     self.parser = argparse.ArgumentParser()
+    # 在 parser.add_argument 区域加入：
+    # self.parser.add_argument('--dataset', default='sonar',
+    #                          help='数据集名称')
+    # self.parser.add_argument('--num_classes', type=int, default=1,
+    #                          help='目标类别数')
+    # self.parser.add_argument('--max_objs', type=int, default=128)
+    # self.parser.add_argument('--output_res', type=int, default=64)
+    self.parser.add_argument('--max_objs', type=int, default=128,
+                             help='max number of objects per image')
     # basic experiment setting
     self.parser.add_argument('task', default='ctdet',
                              help='ctdet | ddd | multi_pose | exdet')
