@@ -50,72 +50,86 @@ class SonarDataset(Dataset):
         np.maximum(heatmap, g, out=heatmap)
 
     def __getitem__(self, idx):
-        row      = self.df.iloc[idx]
+        row = self.df.iloc[idx]
         class_id = int(row['class_id'])
         sig_code = int(row['sig_type'])
 
-        # --- 读取时频矩阵 ---
+        # --- 读取时频矩阵 ---（不变）
         fname = (f"sample_{int(row['sample_id']):05d}_"
                  f"{self.sig_name[sig_code]}_cat{class_id}.mat")
         tf = sio.loadmat(
             os.path.join(self.mat_dir, fname))['tf_matrix'].astype(np.float32)
 
-
-        # 复制三通道 [3, 256, 256]
         inp = np.stack([tf, tf, tf], axis=0)
 
-        # --- 构造官方ctdet格式的GT ---
-        hm_size  = self.opt.output_res   # 默认64
-        scale    = hm_size / 256.0       # 0.25
-        max_objs = self.opt.max_objs     # 默认128
+        # --- 构造GT ---（不变）
+        hm_size = self.opt.output_res
+        scale = hm_size / 256.0
+        max_objs = self.opt.max_objs
 
-        hm       = np.zeros((self.num_classes, hm_size, hm_size), dtype=np.float32)
-        wh       = np.zeros((max_objs, 2),  dtype=np.float32)
-        reg      = np.zeros((max_objs, 2),  dtype=np.float32)
-        ind      = np.zeros(max_objs,       dtype=np.int64)
-        reg_mask = np.zeros(max_objs,       dtype=np.uint8)
-
-        # 额外：头尾偏移（你的自定义输出）
+        hm = np.zeros((self.num_classes, hm_size, hm_size), dtype=np.float32)
+        wh = np.zeros((max_objs, 2), dtype=np.float32)
+        reg = np.zeros((max_objs, 2), dtype=np.float32)
+        ind = np.zeros(max_objs, dtype=np.int64)
+        reg_mask = np.zeros(max_objs, dtype=np.uint8)
         kp_offset = np.zeros((max_objs, 4), dtype=np.float32)
 
-        num_objs = 0
         if class_id == 2 and row['cx'] > 0:
-            cx_hm = np.clip(row['cx'] * scale, 0, hm_size - 1)
-            cy_hm = np.clip(row['cy'] * scale, 0, hm_size - 1)
+            s = scale
+
+            # --- 三个点的坐标缩放到heatmap尺寸 ---
+            cx_hm = np.clip(row['cx'] * s, 0, hm_size - 1)
+            cy_hm = np.clip(row['cy'] * s, 0, hm_size - 1)
+            x1_hm = np.clip(row['x_head'] * s, 0, hm_size - 1)
+            y1_hm = np.clip(row['y_head'] * s, 0, hm_size - 1)
+            x2_hm = np.clip(row['x_tail'] * s, 0, hm_size - 1)
+            y2_hm = np.clip(row['y_tail'] * s, 0, hm_size - 1)
+
             cx_int = int(cx_hm)
             cy_int = int(cy_hm)
+            x1_int = int(x1_hm)
+            y1_int = int(y1_hm)
+            x2_int = int(x2_hm)
+            y2_int = int(y2_hm)
 
-            self._render_gaussian(hm[0], cx_int, cy_int, sigma=3)
+            # --- 检查三点间距，决定sigma ---
+            dist = np.sqrt((x2_int - x1_int) ** 2 + (y2_int - y1_int) ** 2)
+            sigma = 2 if dist < 18 else 3  # 间距较小时用更小的sigma避免融合
 
-            # wh：用头尾点的像素跨度作为"宽高"
-            bw = abs(row['x_tail'] - row['x_head']) * scale
-            bh = abs(row['y_tail'] - row['y_head']) * scale
-            wh[0]  = [bw, bh]
+            # --- 在同一张heatmap上叠加三个高斯峰 ---
+            self._render_gaussian(hm[0], cx_int, cy_int, sigma=sigma)  # 中心点
+            self._render_gaussian(hm[0], x1_int, y1_int, sigma=sigma)  # 头部端点
+            self._render_gaussian(hm[0], x2_int, y2_int, sigma=sigma)  # 尾部端点
 
-            # reg：中心点在heatmap上的小数偏移（subpixel）
-            reg[0] = [cx_hm - cx_int, cy_hm - cy_int]
+            # --- 官方格式GT：三个点各占一个obj slot ---
+            pts = [
+                (cx_hm, cy_hm, cx_int, cy_int),  # slot 0：中心点
+                (x1_hm, y1_hm, x1_int, y1_int),  # slot 1：头部端点
+                (x2_hm, y2_hm, x2_int, y2_int),  # slot 2：尾部端点
+            ]
+            for k, (px, py, px_int, py_int) in enumerate(pts):
+                reg[k] = [px - px_int, py - py_int]
+                ind[k] = py_int * hm_size + px_int
+                reg_mask[k] = 1
 
-            # ind：中心点在heatmap展平后的索引
-            ind[0] = cy_int * hm_size + cx_int
-
-            reg_mask[0] = 1
-            num_objs    = 1
-
-            # 头尾偏移
+            # wh和kp_offset挂在中心点slot上（不变）
+            bw = abs(row['x_tail'] - row['x_head']) * s
+            bh = abs(row['y_tail'] - row['y_head']) * s
+            wh[0] = [bw, bh]
             kp_offset[0] = [
-                (row['x_head'] - row['cx']) * scale,
-                (row['y_head'] - row['cy']) * scale,
-                (row['x_tail'] - row['cx']) * scale,
-                (row['y_tail'] - row['cy']) * scale,
+                (row['x_head'] - row['cx']) * s,
+                (row['y_head'] - row['cy']) * s,
+                (row['x_tail'] - row['cx']) * s,
+                (row['y_tail'] - row['cy']) * s,
             ]
 
         ret = {
-            'input':      torch.from_numpy(inp),
-            'hm':         torch.from_numpy(hm),
-            'reg_mask':   torch.from_numpy(reg_mask),
-            'ind':        torch.from_numpy(ind),
-            'wh':         torch.from_numpy(wh),
-            'reg':        torch.from_numpy(reg),
-            'kp_offset':  torch.from_numpy(kp_offset),
+            'input': torch.from_numpy(inp),
+            'hm': torch.from_numpy(hm),
+            'reg_mask': torch.from_numpy(reg_mask),
+            'ind': torch.from_numpy(ind),
+            'wh': torch.from_numpy(wh),
+            'reg': torch.from_numpy(reg),
+            'kp_offset': torch.from_numpy(kp_offset),
         }
         return ret
