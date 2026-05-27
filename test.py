@@ -11,16 +11,16 @@ import matplotlib.pyplot as plt
 from models.model import create_model, load_model
 
 # --- 加载最优模型 ---
-model = create_model('res_50',
+model = create_model('swin_tiny',
                      heads={'hm': 1, 'wh': 2, 'reg': 2},
                      head_conv=64)
 model = load_model(model,
-                   r'E:\CenterNet\exp\ctdet\sonar_exp1\model_best.pth')
+                   r'E:\CenterNet\exp\ctdet\model_best.pth')
 model.eval()
 
 # --- 输入/输出路径 ---
 input_dir  = r'D:\gradu\simulation_5\tf_dataset\matrices'   # 改成你实际的测试集路径
-output_dir = r'E:\CenterNet\inference_results'
+output_dir = r'E:\CenterNet\inference_results_1'
 os.makedirs(output_dir, exist_ok=True)
 
 # --- 遍历所有 .mat 文件 ---

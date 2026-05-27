@@ -1,7 +1,7 @@
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
-
+from models.networks.swin import SwinCenterNet
 import torchvision.models as models
 import torch
 import torch.nn as nn
@@ -18,16 +18,28 @@ _model_factory = {
   # 'dlav0': get_dlav0, # default DLAup
   # 'dla': get_dla_dcn,
   # 'resdcn': get_pose_net_dcn,
+  'swin_tiny': SwinCenterNet,
   'hourglass': get_large_hourglass_net,
 }
 
+# def create_model(arch, heads, head_conv):
+#   num_layers = int(arch[arch.find('_') + 1:]) if '_' in arch else 0
+#   arch = arch[:arch.find('_')] if '_' in arch else arch
+#   get_model = _model_factory[arch]
+#   model = get_model(num_layers=num_layers, heads=heads, head_conv=head_conv)
+#   return model
 def create_model(arch, heads, head_conv):
-  num_layers = int(arch[arch.find('_') + 1:]) if '_' in arch else 0
-  arch = arch[:arch.find('_')] if '_' in arch else arch
-  get_model = _model_factory[arch]
-  model = get_model(num_layers=num_layers, heads=heads, head_conv=head_conv)
+  if arch == 'swin_tiny':
+    model = SwinCenterNet(
+      heads=heads,
+      head_conv=head_conv,
+      model_name='swinv2_tiny_window8_256',
+      pretrained=True
+    )
+  else:
+    # 原来的逻辑不变
+    ...
   return model
-
 def load_model(model, model_path, optimizer=None, resume=False, 
                lr=None, lr_step=None):
   start_epoch = 0

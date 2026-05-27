@@ -4,7 +4,7 @@ os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 import re
 import matplotlib.pyplot as plt
 
-log_path = r'E:\CenterNet\exp\ctdet\sonar_exp1\logs_2026-05-12-14-43\log.txt'
+log_path = r'E:\CenterNet\exp\ctdet\sonar_swin_exp1\logs_2026-05-26-21-00\log.txt'
 
 train_epochs, train_loss, train_hm, train_wh = [], [], [], []
 val_epochs,   val_loss,   val_hm,   val_wh   = [], [], [], []
