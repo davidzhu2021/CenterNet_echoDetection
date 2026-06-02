@@ -19,8 +19,8 @@ model = load_model(model,
 model.eval()
 
 # --- 输入/输出路径 ---
-input_dir  = r'D:\gradu\simulation_5\tf_dataset\matrices'   # 改成你实际的测试集路径
-output_dir = r'E:\CenterNet\inference_results_1'
+input_dir = r'D:\gradu\simulation_5\tf_dataset\matrices'
+output_dir = r'D:\gradu\simulation_5\tf_dataset\matrices\inference_results'
 os.makedirs(output_dir, exist_ok=True)
 
 # --- 遍历所有 .mat 文件 ---

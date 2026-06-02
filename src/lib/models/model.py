@@ -22,24 +22,23 @@ _model_factory = {
   'hourglass': get_large_hourglass_net,
 }
 
-# def create_model(arch, heads, head_conv):
-#   num_layers = int(arch[arch.find('_') + 1:]) if '_' in arch else 0
-#   arch = arch[:arch.find('_')] if '_' in arch else arch
-#   get_model = _model_factory[arch]
-#   model = get_model(num_layers=num_layers, heads=heads, head_conv=head_conv)
-#   return model
 def create_model(arch, heads, head_conv):
   if arch == 'swin_tiny':
-    model = SwinCenterNet(
+    return SwinCenterNet(
       heads=heads,
       head_conv=head_conv,
       model_name='swinv2_tiny_window8_256',
       pretrained=True
     )
-  else:
-    # 原来的逻辑不变
-    ...
+
+  num_layers = int(arch[arch.find('_') + 1:]) if '_' in arch else 0
+  arch = arch[:arch.find('_')] if '_' in arch else arch
+  if arch not in _model_factory:
+    raise KeyError('Unknown architecture: {}'.format(arch))
+  get_model = _model_factory[arch]
+  model = get_model(num_layers=num_layers, heads=heads, head_conv=head_conv)
   return model
+
 def load_model(model, model_path, optimizer=None, resume=False, 
                lr=None, lr_step=None):
   start_epoch = 0

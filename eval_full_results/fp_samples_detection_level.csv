@@ -1,0 +1,1 @@
+sample_id,sig_type,sig_name,gt_class,pred_exists,top_score,matched,iou,loc_error,pred_cx,pred_cy,gt_cx,gt_cy
