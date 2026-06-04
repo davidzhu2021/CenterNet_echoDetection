@@ -1,6 +1,7 @@
 import os
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
+import argparse
 import sys
 sys.path.insert(0, r'E:\CenterNet\src\lib')
 
@@ -11,7 +12,7 @@ import scipy.io as sio
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from models.model import create_model, load_model
+from models.model import create_model
 
 
 # =========================================================
@@ -22,7 +23,6 @@ CSV_PATH   = r'D:\gradu\simulation_5\tf_dataset\labels.csv'
 MAT_DIR    = r'D:\gradu\simulation_5\tf_dataset\matrices'
 
 SAVE_DIR = 'eval_full_results'
-os.makedirs(SAVE_DIR, exist_ok=True)
 
 SIG_NAME = {1: 'LFM', 2: 'HFM'}
 
@@ -38,6 +38,53 @@ TOPK = 20
 # 如果 labels.csv 里有 bbox，就用 IoU 匹配
 IOU_THRESH = 0.5
 
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Evaluate sonar CenterNet checkpoints.')
+    parser.add_argument('--arch', default='res_50', help='model architecture, e.g. res_50, swin_tiny')
+    parser.add_argument('--model_path', default=MODEL_PATH, help='checkpoint path')
+    parser.add_argument('--csv_path', default=CSV_PATH, help='labels.csv path')
+    parser.add_argument('--mat_dir', default=MAT_DIR, help='directory containing .mat STFT matrices')
+    parser.add_argument('--save_dir', default=SAVE_DIR, help='directory to save evaluation results')
+    parser.add_argument('--input_res', default=256, type=int, help='input resolution used by the model')
+    parser.add_argument('--score_thresh', default=THRESHOLD, type=float, help='score threshold for evaluation')
+    parser.add_argument(
+        '--device',
+        default='auto',
+        help='device for inference: auto, cpu, cuda, cuda:0, etc.'
+    )
+    return parser.parse_args()
+
+
+def resolve_device(device_arg):
+    if device_arg == 'auto':
+        return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    return torch.device(device_arg)
+
+
+def load_eval_checkpoint(model, model_path, device):
+    checkpoint = torch.load(model_path, map_location=device)
+
+    if isinstance(checkpoint, dict):
+        if 'state_dict' in checkpoint:
+            state_dict = checkpoint['state_dict']
+        elif 'model' in checkpoint:
+            state_dict = checkpoint['model']
+        else:
+            state_dict = checkpoint
+    else:
+        state_dict = checkpoint
+
+    cleaned_state_dict = {}
+    for key, value in state_dict.items():
+        if key.startswith('module.') and not key.startswith('module_list'):
+            cleaned_state_dict[key[7:]] = value
+        else:
+            cleaned_state_dict[key] = value
+
+    model.load_state_dict(cleaned_state_dict, strict=True)
+    return model
+
 # 如果 labels.csv 里没有 bbox，只有 cx/cy，就用中心点距离匹配
 CENTER_TOL = 40.0  # 单位：px，可根据任务改成 30、40、50
 
@@ -45,16 +92,33 @@ CENTER_TOL = 40.0  # 单位：px，可根据任务改成 30、40、50
 # =========================================================
 # 加载模型
 # =========================================================
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+args = parse_args()
+MODEL_PATH = args.model_path
+CSV_PATH = args.csv_path
+MAT_DIR = args.mat_dir
+SAVE_DIR = args.save_dir
+DOWN_RATIO = args.input_res // 64
+THRESHOLD = args.score_thresh
+
+os.makedirs(SAVE_DIR, exist_ok=True)
+
+print('Evaluation config:')
+print(f'  arch: {args.arch}')
+print(f'  model_path: {MODEL_PATH}')
+print(f'  csv_path: {CSV_PATH}')
+print(f'  mat_dir: {MAT_DIR}')
+print(f'  save_dir: {SAVE_DIR}')
+
+device = resolve_device(args.device)
 print('Using device:', device)
 
 model = create_model(
-    'res_50',
+    args.arch,
     heads={'hm': 1, 'wh': 2, 'reg': 2},
     head_conv=64
 )
 
-model = load_model(model, MODEL_PATH)
+model = load_eval_checkpoint(model, MODEL_PATH, device)
 model = model.to(device)
 model.eval()
 
