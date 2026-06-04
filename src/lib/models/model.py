@@ -21,6 +21,7 @@ _model_factory = {
   # 'resdcn': get_pose_net_dcn,
   'swin_tiny': SwinCenterNet,
   'swin_tiny_fpn': SwinV2TinyFPNCenterNet,
+  'swin_tiny_fpn_cnnstem': SwinV2TinyFPNCenterNet,
   'hourglass': get_large_hourglass_net,
 }
 
@@ -39,7 +40,20 @@ def create_model(arch, heads, head_conv):
       head_conv=head_conv,
       model_name='swinv2_tiny_window8_256',
       pretrained=True,
-      fpn_channels=128
+      fpn_channels=128,
+      use_cnn_stem=False,
+      in_chans=3
+    )
+
+  if arch == 'swin_tiny_fpn_cnnstem':
+    return SwinV2TinyFPNCenterNet(
+      heads=heads,
+      head_conv=head_conv,
+      model_name='swinv2_tiny_window8_256',
+      pretrained=True,
+      fpn_channels=128,
+      use_cnn_stem=True,
+      in_chans=3
     )
 
   num_layers = int(arch[arch.find('_') + 1:]) if '_' in arch else 0

@@ -18,25 +18,28 @@ def fmt_shape(tensor):
 
 def main():
     heads = {'hm': 1, 'wh': 2, 'reg': 2}
-    model = create_model('swin_tiny_fpn', heads=heads, head_conv=64)
-    model.eval()
-
     x = torch.randn(2, 3, 256, 256)
-    with torch.no_grad():
-        outputs, debug = model(x, return_debug=True)
 
-    print('[Swin stages]')
-    for name, tensor in debug['stages'].items():
-        print(f'  {name}: {fmt_shape(tensor)}')
+    for arch in ('swin_tiny_fpn', 'swin_tiny_fpn_cnnstem'):
+        print(f'[{arch}]')
+        model = create_model(arch, heads=heads, head_conv=64)
+        model.eval()
 
-    print('[FPN outputs]')
-    for name, tensor in debug['fpn'].items():
-        print(f'  {name}: {fmt_shape(tensor)}')
+        with torch.no_grad():
+            outputs, debug = model(x, return_debug=True)
 
-    print('[Heads]')
-    ret = outputs[-1]
-    for head in ('hm', 'wh', 'reg'):
-        print(f'  {head}: {fmt_shape(ret[head])}')
+        print('  [Swin stages]')
+        for name, tensor in debug['stages'].items():
+            print(f'    {name}: {fmt_shape(tensor)}')
+
+        print('  [FPN outputs]')
+        for name, tensor in debug['fpn'].items():
+            print(f'    {name}: {fmt_shape(tensor)}')
+
+        print('  [Heads]')
+        ret = outputs[-1]
+        for head in ('hm', 'wh', 'reg'):
+            print(f'    {head}: {fmt_shape(ret[head])}')
 
 
 if __name__ == '__main__':

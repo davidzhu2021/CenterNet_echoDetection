@@ -54,8 +54,22 @@ class SwinV2TinyFPNCenterNet(nn.Module):
     def __init__(self, heads, head_conv,
                  model_name='swinv2_tiny_window8_256',
                  pretrained=True,
-                 fpn_channels=128):
+                 fpn_channels=128,
+                 use_cnn_stem=False,
+                 in_chans=3):
         super().__init__()
+
+        self.use_cnn_stem = use_cnn_stem
+        self.cnn_stem = nn.Identity()
+        if use_cnn_stem:
+            self.cnn_stem = nn.Sequential(
+                nn.Conv2d(in_chans, 32, kernel_size=3, stride=1, padding=1),
+                nn.BatchNorm2d(32),
+                nn.SiLU(inplace=True),
+                nn.Conv2d(32, 3, kernel_size=3, stride=1, padding=1),
+                nn.BatchNorm2d(3),
+                nn.SiLU(inplace=True),
+            )
 
         self.backbone = timm.create_model(
             model_name,
@@ -99,6 +113,7 @@ class SwinV2TinyFPNCenterNet(nn.Module):
         return feat.contiguous()
 
     def forward(self, x, return_debug=False):
+        x = self.cnn_stem(x)
         raw_features = self.backbone(x)
         features = [self._to_nchw(feat) for feat in raw_features]
 
