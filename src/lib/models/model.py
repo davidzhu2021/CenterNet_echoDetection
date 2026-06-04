@@ -2,6 +2,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 from models.networks.swin import SwinCenterNet
+from models.networks.swin_fpn import SwinV2TinyFPNCenterNet
 import torchvision.models as models
 import torch
 import torch.nn as nn
@@ -19,6 +20,7 @@ _model_factory = {
   # 'dla': get_dla_dcn,
   # 'resdcn': get_pose_net_dcn,
   'swin_tiny': SwinCenterNet,
+  'swin_tiny_fpn': SwinV2TinyFPNCenterNet,
   'hourglass': get_large_hourglass_net,
 }
 
@@ -29,6 +31,15 @@ def create_model(arch, heads, head_conv):
       head_conv=head_conv,
       model_name='swinv2_tiny_window8_256',
       pretrained=True
+    )
+
+  if arch == 'swin_tiny_fpn':
+    return SwinV2TinyFPNCenterNet(
+      heads=heads,
+      head_conv=head_conv,
+      model_name='swinv2_tiny_window8_256',
+      pretrained=True,
+      fpn_channels=128
     )
 
   num_layers = int(arch[arch.find('_') + 1:]) if '_' in arch else 0
