@@ -52,11 +52,12 @@ def check_mode(hm_mode, batch_size):
 
 def main():
     parser = argparse.ArgumentParser(description='Check sonar keypoint heatmap batch shapes.')
-    parser.add_argument('--hm_mode', default='mixed', choices=['mixed', 'keypoint3', 'both'])
+    parser.add_argument('--hm_mode', default='mixed',
+                        choices=['mixed', 'keypoint3', 'endpoint2', 'all'])
     parser.add_argument('--batch_size', type=int, default=2)
     args = parser.parse_args()
 
-    modes = ['mixed', 'keypoint3'] if args.hm_mode == 'both' else [args.hm_mode]
+    modes = ['mixed', 'keypoint3', 'endpoint2'] if args.hm_mode == 'all' else [args.hm_mode]
     for mode in modes:
         check_mode(mode, args.batch_size)
 

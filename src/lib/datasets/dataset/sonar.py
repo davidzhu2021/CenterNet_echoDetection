@@ -65,9 +65,14 @@ class SonarDataset(Dataset):
         scale = hm_size / 256.0
         max_objs = self.opt.max_objs
         hm_mode = getattr(self.opt, 'hm_mode', 'mixed')
+        default_hm_channels = {
+            'mixed': self.num_classes,
+            'keypoint3': 3,
+            'endpoint2': 2
+        }[hm_mode]
         hm_channels = getattr(
             self.opt, 'hm_channels',
-            3 if hm_mode == 'keypoint3' else self.num_classes)
+            default_hm_channels)
 
         hm = np.zeros((hm_channels, hm_size, hm_size), dtype=np.float32)
         wh = np.zeros((max_objs, 2), dtype=np.float32)
@@ -99,6 +104,8 @@ class SonarDataset(Dataset):
 
             if hm_mode == 'keypoint3':
                 hm_ids = (0, 1, 2)
+            elif hm_mode == 'endpoint2':
+                hm_ids = (0, 1, 1)
             else:
                 hm_ids = (0, 0, 0)
 

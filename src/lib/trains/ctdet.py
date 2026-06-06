@@ -59,7 +59,7 @@ class CtdetLoss(torch.nn.Module):
             output['wh'], batch['cat_spec_mask'],
             batch['ind'], batch['cat_spec_wh']) / opt.num_stacks
         else:
-          if getattr(opt, 'hm_mode', 'mixed') == 'keypoint3' and 'wh_mask' in batch:
+          if getattr(opt, 'hm_mode', 'mixed') in ['keypoint3', 'endpoint2'] and 'wh_mask' in batch:
             wh_mask = batch['wh_mask']
           else:
             wh_mask = batch['reg_mask']

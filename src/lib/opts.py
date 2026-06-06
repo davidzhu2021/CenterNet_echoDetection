@@ -79,9 +79,10 @@ class opts(object):
     self.parser.add_argument('--down_ratio', type=int, default=4,
                              help='output stride. Currently only supports 4.')
     self.parser.add_argument('--hm_mode', default='mixed',
-                             choices=['mixed', 'keypoint3'],
+                             choices=['mixed', 'keypoint3', 'endpoint2'],
                              help='sonar heatmap mode: mixed uses one hm '
                                   'channel, keypoint3 uses center/head/tail '
+                                  'channels, endpoint2 uses center/endpoint '
                                   'channels.')
 
     # input
@@ -299,7 +300,12 @@ class opts(object):
     input_h, input_w = dataset.default_resolution
     opt.mean, opt.std = dataset.mean, dataset.std
     opt.num_classes = dataset.num_classes
-    opt.hm_channels = 3 if opt.hm_mode == 'keypoint3' else opt.num_classes
+    hm_channels = {
+      'mixed': opt.num_classes,
+      'keypoint3': 3,
+      'endpoint2': 2
+    }
+    opt.hm_channels = hm_channels[opt.hm_mode]
 
     # input_h(w): opt.input_h overrides opt.input_res overrides dataset default
     input_h = opt.input_res if opt.input_res > 0 else input_h

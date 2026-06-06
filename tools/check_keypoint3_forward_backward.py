@@ -22,7 +22,7 @@ from models.model import create_model
 from trains.ctdet import CtdetLoss
 
 
-def build_options(batch_size):
+def build_options(batch_size, hm_mode):
     opt = opts().parse([
         'ctdet',
         '--dataset', 'sonar',
@@ -31,7 +31,7 @@ def build_options(batch_size):
         '--num_workers', '0',
         '--batch_size', str(batch_size),
         '--input_res', '256',
-        '--hm_mode', 'keypoint3',
+        '--hm_mode', hm_mode,
     ])
     Dataset = get_dataset(opt.dataset, opt.task)
     opt = opts().update_dataset_info_and_set_heads(opt, Dataset)
@@ -47,11 +47,13 @@ def move_batch_to_device(batch, device):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Check keypoint3 forward/loss/backward.')
+    parser = argparse.ArgumentParser(description='Check hm_mode forward/loss/backward.')
     parser.add_argument('--batch_size', type=int, default=2)
+    parser.add_argument('--hm_mode', default='endpoint2',
+                        choices=['keypoint3', 'endpoint2'])
     args = parser.parse_args()
 
-    opt, Dataset = build_options(args.batch_size)
+    opt, Dataset = build_options(args.batch_size, args.hm_mode)
     dataset = Dataset(opt, 'train')
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=0)
     batch = move_batch_to_device(next(iter(loader)), opt.device)
