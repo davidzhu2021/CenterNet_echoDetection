@@ -78,6 +78,11 @@ class opts(object):
                                   '64 for resnets and 256 for dla.')
     self.parser.add_argument('--down_ratio', type=int, default=4,
                              help='output stride. Currently only supports 4.')
+    self.parser.add_argument('--hm_mode', default='mixed',
+                             choices=['mixed', 'keypoint3'],
+                             help='sonar heatmap mode: mixed uses one hm '
+                                  'channel, keypoint3 uses center/head/tail '
+                                  'channels.')
 
     # input
     self.parser.add_argument('--input_res', type=int, default=-1, 
@@ -294,6 +299,7 @@ class opts(object):
     input_h, input_w = dataset.default_resolution
     opt.mean, opt.std = dataset.mean, dataset.std
     opt.num_classes = dataset.num_classes
+    opt.hm_channels = 3 if opt.hm_mode == 'keypoint3' else opt.num_classes
 
     # input_h(w): opt.input_h overrides opt.input_res overrides dataset default
     input_h = opt.input_res if opt.input_res > 0 else input_h
@@ -323,7 +329,7 @@ class opts(object):
         opt.heads.update({'reg': 2})
     elif opt.task == 'ctdet':
       # assert opt.dataset in ['pascal', 'coco']
-      opt.heads = {'hm': opt.num_classes,
+      opt.heads = {'hm': opt.hm_channels,
                    'wh': 2 if not opt.cat_spec_wh else 2 * opt.num_classes}
       if opt.reg_offset:
         opt.heads.update({'reg': 2})
