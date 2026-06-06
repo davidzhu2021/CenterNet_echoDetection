@@ -48,6 +48,11 @@ def parse_args():
     parser.add_argument('--save_dir', default=SAVE_DIR, help='directory to save evaluation results')
     parser.add_argument('--input_res', default=256, type=int, help='input resolution used by the model')
     parser.add_argument('--score_thresh', default=THRESHOLD, type=float, help='score threshold for evaluation')
+    parser.add_argument('--hm_mode', default='mixed', choices=['mixed', 'keypoint3'],
+                        help='heatmap decode mode: mixed keeps old single-channel decode; '
+                             'keypoint3 decodes center/head/tail channels separately')
+    parser.add_argument('--use_keypoint_score_fusion', action='store_true',
+                        help='in keypoint3 mode, use center_score * sqrt(head_score * tail_score)')
     parser.add_argument(
         '--device',
         default='auto',
@@ -108,13 +113,16 @@ print(f'  model_path: {MODEL_PATH}')
 print(f'  csv_path: {CSV_PATH}')
 print(f'  mat_dir: {MAT_DIR}')
 print(f'  save_dir: {SAVE_DIR}')
+print(f'  hm_mode: {args.hm_mode}')
+print(f'  use_keypoint_score_fusion: {args.use_keypoint_score_fusion}')
 
 device = resolve_device(args.device)
 print('Using device:', device)
 
+hm_channels = 3 if args.hm_mode == 'keypoint3' else 1
 model = create_model(
     args.arch,
-    heads={'hm': 1, 'wh': 2, 'reg': 2},
+    heads={'hm': hm_channels, 'wh': 2, 'reg': 2},
     head_conv=64
 )
 
@@ -201,6 +209,105 @@ def decode_centernet_output(output, K=20, down_ratio=4):
             'y1': float(y1[i].detach().cpu()),
             'x2': float(x2[i].detach().cpu()),
             'y2': float(y2[i].detach().cpu()),
+        })
+
+    return dets
+
+
+def decode_keypoint3_output(output, K=20, down_ratio=4, use_score_fusion=False):
+    """
+    Decode hm[0]=center, hm[1]=head, hm[2]=tail without mixing channels.
+    The center channel drives detection candidates and keeps compatibility with
+    the existing image-level / detection-level evaluation.
+    """
+    hm = output['hm'].sigmoid()
+    wh = output['wh']
+    reg = output.get('reg', None)
+
+    B, C, H, W = hm.shape
+    assert B == 1, 'current decode function expects batch=1'
+    assert C >= 3, 'keypoint3 mode expects hm with at least 3 channels'
+
+    def decode_channel(channel, num_points):
+        channel_hm = nms_heatmap(hm[:, channel:channel + 1])
+        scores, inds = torch.topk(channel_hm.reshape(-1), num_points)
+
+        inds_spatial = inds % (H * W)
+        ys = (inds_spatial // W).long()
+        xs = (inds_spatial % W).long()
+
+        xs_float = xs.float()
+        ys_float = ys.float()
+
+        if reg is not None:
+            reg_x = reg[0, 0, ys, xs]
+            reg_y = reg[0, 1, ys, xs]
+            xs_float = xs_float + reg_x
+            ys_float = ys_float + reg_y
+        else:
+            xs_float = xs_float + 0.5
+            ys_float = ys_float + 0.5
+
+        points = []
+        for i in range(num_points):
+            points.append({
+                'score': float(scores[i].detach().cpu()),
+                'x': float((xs_float[i] * down_ratio).detach().cpu()),
+                'y': float((ys_float[i] * down_ratio).detach().cpu()),
+                'grid_x': xs[i],
+                'grid_y': ys[i],
+            })
+        return points
+
+    centers = decode_channel(0, K)
+    heads = decode_channel(1, K)
+    tails = decode_channel(2, K)
+    best_head = heads[0] if len(heads) > 0 else None
+    best_tail = tails[0] if len(tails) > 0 else None
+
+    dets = []
+    for center in centers:
+        y = center['grid_y']
+        x = center['grid_x']
+
+        pred_w = wh[0, 0, y, x].clamp(min=1.0)
+        pred_h = wh[0, 1, y, x].clamp(min=1.0)
+
+        center_x = center['x']
+        center_y = center['y']
+        center_x_hm = center_x / down_ratio
+        center_y_hm = center_y / down_ratio
+
+        x1 = (center_x_hm - pred_w / 2) * down_ratio
+        y1 = (center_y_hm - pred_h / 2) * down_ratio
+        x2 = (center_x_hm + pred_w / 2) * down_ratio
+        y2 = (center_y_hm + pred_h / 2) * down_ratio
+
+        center_score = center['score']
+        head_score = best_head['score'] if best_head is not None else 0.0
+        tail_score = best_tail['score'] if best_tail is not None else 0.0
+        final_score = center_score
+        if use_score_fusion:
+            final_score = center_score * np.sqrt(max(head_score * tail_score, 0.0))
+
+        dets.append({
+            'score': float(final_score),
+            'cx': center_x,
+            'cy': center_y,
+            'x1': float(x1.detach().cpu()),
+            'y1': float(y1.detach().cpu()),
+            'x2': float(x2.detach().cpu()),
+            'y2': float(y2.detach().cpu()),
+            'center_x': center_x,
+            'center_y': center_y,
+            'head_x': best_head['x'] if best_head is not None else np.nan,
+            'head_y': best_head['y'] if best_head is not None else np.nan,
+            'tail_x': best_tail['x'] if best_tail is not None else np.nan,
+            'tail_y': best_tail['y'] if best_tail is not None else np.nan,
+            'center_score': center_score,
+            'head_score': head_score,
+            'tail_score': tail_score,
+            'final_score': float(final_score),
         })
 
     return dets
@@ -339,7 +446,15 @@ for i, (_, row) in enumerate(test_df.iterrows()):
 
     with torch.no_grad():
         output = model(inp)[-1]
-        dets = decode_centernet_output(output, K=TOPK, down_ratio=DOWN_RATIO)
+        if args.hm_mode == 'keypoint3':
+            dets = decode_keypoint3_output(
+                output,
+                K=TOPK,
+                down_ratio=DOWN_RATIO,
+                use_score_fusion=args.use_keypoint_score_fusion
+            )
+        else:
+            dets = decode_centernet_output(output, K=TOPK, down_ratio=DOWN_RATIO)
 
     gt_exists = class_id == 2
     gt_center = get_gt_center(row) if gt_exists else None
@@ -377,6 +492,16 @@ for i, (_, row) in enumerate(test_df.iterrows()):
             'pred_y1': det['y1'],
             'pred_x2': det['x2'],
             'pred_y2': det['y2'],
+            'center_x': det.get('center_x', det['cx']),
+            'center_y': det.get('center_y', det['cy']),
+            'head_x': det.get('head_x', np.nan),
+            'head_y': det.get('head_y', np.nan),
+            'tail_x': det.get('tail_x', np.nan),
+            'tail_y': det.get('tail_y', np.nan),
+            'center_score': det.get('center_score', det['score']),
+            'head_score': det.get('head_score', np.nan),
+            'tail_score': det.get('tail_score', np.nan),
+            'final_score': det.get('final_score', det['score']),
         })
 
     if (i + 1) % 100 == 0 or (i + 1) == len(test_df):
