@@ -15,6 +15,29 @@ class SonarDataset(Dataset):
     mean = np.array([0.5, 0.5, 0.5], dtype=np.float32)
     std = np.array([0.5, 0.5, 0.5], dtype=np.float32)
 
+    def _read_split_ids(self, split_path):
+        with open(split_path, 'r') as f:
+            return [int(line.strip()) for line in f if line.strip()]
+
+    def _load_split_df(self, df, split):
+        split_path = os.path.join(self.data_dir, 'splits', split + '.txt')
+        if not os.path.exists(split_path):
+            raise FileNotFoundError(
+                'Missing sonar split file: {}. Run '
+                '`python tools/create_sonar_splits.py --data_dir {}` first.'
+                .format(split_path, self.data_dir))
+
+        split_ids = self._read_split_ids(split_path)
+        df_by_id = df.set_index('sample_id', drop=False)
+        missing_ids = [sample_id for sample_id in split_ids
+                       if sample_id not in df_by_id.index]
+        if missing_ids:
+            raise ValueError(
+                '{} split contains sample_id values not in labels.csv: {}'
+                .format(split, missing_ids[:10]))
+
+        return df_by_id.loc[split_ids].reset_index(drop=True)
+
     def __init__(self, opt, split):
         self.data_dir = os.path.join(opt.data_dir, 'sonar')
         self.mat_dir = os.path.join(self.data_dir, 'matrices')
@@ -22,14 +45,9 @@ class SonarDataset(Dataset):
         self.split = split
 
         df = pd.read_csv(os.path.join(self.data_dir, 'labels.csv'))
-
-        np.random.seed(42)
-        idx = np.random.permutation(len(df))
-        n_train = int(len(df) * 0.8)
-        if split == 'train':
-            self.df = df.iloc[idx[:n_train]].reset_index(drop=True)
-        else:
-            self.df = df.iloc[idx[n_train:]].reset_index(drop=True)
+        if split not in ['train', 'val', 'test']:
+            raise ValueError('Unsupported sonar split: {}'.format(split))
+        self.df = self._load_split_df(df, split)
 
         self.num_samples = len(self.df)
         print(f'[SonarDataset] {split}: {self.num_samples} samples')

@@ -46,13 +46,22 @@ def parse_args():
     parser.add_argument('--csv_path', default=CSV_PATH, help='labels.csv path')
     parser.add_argument('--mat_dir', default=MAT_DIR, help='directory containing .mat STFT matrices')
     parser.add_argument('--save_dir', default=SAVE_DIR, help='directory to save evaluation results')
+    parser.add_argument('--split', default='all', choices=['all', 'train', 'val', 'test'],
+                        help='evaluation split; all keeps the old behavior')
+    parser.add_argument('--split_dir', default=None,
+                        help='directory containing train.txt/val.txt/test.txt')
     parser.add_argument('--input_res', default=256, type=int, help='input resolution used by the model')
     parser.add_argument('--score_thresh', default=THRESHOLD, type=float, help='score threshold for evaluation')
-    parser.add_argument('--hm_mode', default='mixed', choices=['mixed', 'keypoint3'],
+    parser.add_argument('--hm_mode', default='mixed', choices=['mixed', 'keypoint3', 'endpoint2'],
                         help='heatmap decode mode: mixed keeps old single-channel decode; '
-                             'keypoint3 decodes center/head/tail channels separately')
+                             'keypoint3 decodes center/head/tail channels separately; '
+                             'endpoint2 decodes center plus unordered endpoints')
     parser.add_argument('--use_keypoint_score_fusion', action='store_true',
                         help='in keypoint3 mode, use center_score * sqrt(head_score * tail_score)')
+    parser.add_argument('--endpoint_search_radius', default=16, type=int,
+                        help='endpoint2 local search radius on 64x64 heatmap coordinates')
+    parser.add_argument('--use_endpoint_score_fusion', action='store_true',
+                        help='in endpoint2 mode, use center_score * sqrt(endpoint1_score * endpoint2_score)')
     parser.add_argument(
         '--device',
         default='auto',
@@ -90,6 +99,52 @@ def load_eval_checkpoint(model, model_path, device):
     model.load_state_dict(cleaned_state_dict, strict=True)
     return model
 
+
+def read_split_ids(split_path):
+    with open(split_path, 'r') as f:
+        return [int(line.strip()) for line in f if line.strip()]
+
+
+def resolve_split_path(split, split_dir, csv_path):
+    candidate_dirs = []
+    if split_dir is not None:
+        candidate_dirs.append(split_dir)
+    candidate_dirs.append(os.path.join(os.path.dirname(csv_path), 'splits'))
+    candidate_dirs.append(os.path.join('data', 'sonar', 'splits'))
+
+    checked = []
+    for candidate_dir in candidate_dirs:
+        split_path = os.path.join(candidate_dir, split + '.txt')
+        checked.append(split_path)
+        if os.path.exists(split_path):
+            return split_path
+
+    raise FileNotFoundError(
+        'Cannot find split file for "{}". Checked: {}'.format(
+            split, checked))
+
+
+def filter_df_by_split(df, split, split_dir, csv_path):
+    if split == 'all':
+        return df.reset_index(drop=True), None
+
+    split_path = resolve_split_path(split, split_dir, csv_path)
+    split_ids = read_split_ids(split_path)
+    work_df = df.copy()
+    work_df['_sample_id_int'] = work_df['sample_id'].astype(int)
+    df_by_id = work_df.set_index('_sample_id_int', drop=False)
+
+    missing_ids = [sample_id for sample_id in split_ids
+                   if sample_id not in df_by_id.index]
+    if missing_ids:
+        raise ValueError(
+            '{} contains sample_id values not in labels.csv: {}'.format(
+                split_path, missing_ids[:10]))
+
+    filtered = df_by_id.loc[split_ids].drop(
+        columns=['_sample_id_int']).reset_index(drop=True)
+    return filtered, split_path
+
 # 如果 labels.csv 里没有 bbox，只有 cx/cy，就用中心点距离匹配
 CENTER_TOL = 40.0  # 单位：px，可根据任务改成 30、40、50
 
@@ -113,13 +168,21 @@ print(f'  model_path: {MODEL_PATH}')
 print(f'  csv_path: {CSV_PATH}')
 print(f'  mat_dir: {MAT_DIR}')
 print(f'  save_dir: {SAVE_DIR}')
+print(f'  split: {args.split}')
+print(f'  split_dir: {args.split_dir}')
 print(f'  hm_mode: {args.hm_mode}')
 print(f'  use_keypoint_score_fusion: {args.use_keypoint_score_fusion}')
+print(f'  endpoint_search_radius: {args.endpoint_search_radius}')
+print(f'  use_endpoint_score_fusion: {args.use_endpoint_score_fusion}')
 
 device = resolve_device(args.device)
 print('Using device:', device)
 
-hm_channels = 3 if args.hm_mode == 'keypoint3' else 1
+hm_channels = {
+    'mixed': 1,
+    'keypoint3': 3,
+    'endpoint2': 2,
+}[args.hm_mode]
 model = create_model(
     args.arch,
     heads={'hm': hm_channels, 'wh': 2, 'reg': 2},
@@ -313,6 +376,134 @@ def decode_keypoint3_output(output, K=20, down_ratio=4, use_score_fusion=False):
     return dets
 
 
+def decode_endpoint2_output(output, K=20, down_ratio=4,
+                            endpoint_search_radius=16,
+                            use_score_fusion=False):
+    """
+    Decode hm[0]=center and hm[1]=unordered endpoint heatmap.
+    Center candidates drive detection. For each center, endpoints are searched
+    in a local window on the endpoint channel, with full-map top2 fallback.
+    """
+    hm = output['hm'].sigmoid()
+    wh = output['wh']
+    reg = output.get('reg', None)
+
+    B, C, H, W = hm.shape
+    assert B == 1, 'current decode function expects batch=1'
+    assert C >= 2, 'endpoint2 mode expects hm with at least 2 channels'
+
+    center_hm = nms_heatmap(hm[:, 0:1])
+    endpoint_hm = nms_heatmap(hm[:, 1:2])
+
+    def decode_points(xs, ys, scores):
+        xs_float = xs.float()
+        ys_float = ys.float()
+
+        if reg is not None:
+            reg_x = reg[0, 0, ys, xs]
+            reg_y = reg[0, 1, ys, xs]
+            xs_float = xs_float + reg_x
+            ys_float = ys_float + reg_y
+        else:
+            xs_float = xs_float + 0.5
+            ys_float = ys_float + 0.5
+
+        points = []
+        for i in range(len(scores)):
+            points.append({
+                'score': float(scores[i].detach().cpu()),
+                'x': float((xs_float[i] * down_ratio).detach().cpu()),
+                'y': float((ys_float[i] * down_ratio).detach().cpu()),
+                'grid_x': xs[i],
+                'grid_y': ys[i],
+            })
+        return points
+
+    def topk_from_channel(channel_hm, num_points):
+        scores, inds = torch.topk(channel_hm.reshape(-1), num_points)
+        inds_spatial = inds % (H * W)
+        ys = (inds_spatial // W).long()
+        xs = (inds_spatial % W).long()
+        return decode_points(xs, ys, scores)
+
+    def top2_endpoints_for_center(center):
+        center_x = int(center['grid_x'].detach().cpu())
+        center_y = int(center['grid_y'].detach().cpu())
+        radius = max(int(endpoint_search_radius), 0)
+
+        x0 = max(0, center_x - radius)
+        x1 = min(W, center_x + radius + 1)
+        y0 = max(0, center_y - radius)
+        y1 = min(H, center_y + radius + 1)
+
+        local = endpoint_hm[0, 0, y0:y1, x0:x1].reshape(-1)
+        valid_inds = torch.nonzero(local > 0, as_tuple=False).flatten()
+
+        if valid_inds.numel() >= 2:
+            valid_scores = local[valid_inds]
+            scores, order = torch.topk(valid_scores, 2)
+            local_inds = valid_inds[order]
+            local_w = x1 - x0
+            ys = (local_inds // local_w).long() + y0
+            xs = (local_inds % local_w).long() + x0
+            return decode_points(xs, ys, scores)
+
+        return topk_from_channel(endpoint_hm, 2)
+
+    centers = topk_from_channel(center_hm, K)
+
+    dets = []
+    for center in centers:
+        y = center['grid_y']
+        x = center['grid_x']
+
+        pred_w = wh[0, 0, y, x].clamp(min=1.0)
+        pred_h = wh[0, 1, y, x].clamp(min=1.0)
+
+        center_x = center['x']
+        center_y = center['y']
+        center_x_hm = center_x / down_ratio
+        center_y_hm = center_y / down_ratio
+
+        x1 = (center_x_hm - pred_w / 2) * down_ratio
+        y1 = (center_y_hm - pred_h / 2) * down_ratio
+        x2 = (center_x_hm + pred_w / 2) * down_ratio
+        y2 = (center_y_hm + pred_h / 2) * down_ratio
+
+        endpoints = top2_endpoints_for_center(center)
+        endpoint1 = endpoints[0] if len(endpoints) > 0 else None
+        endpoint2 = endpoints[1] if len(endpoints) > 1 else None
+
+        center_score = center['score']
+        endpoint1_score = endpoint1['score'] if endpoint1 is not None else 0.0
+        endpoint2_score = endpoint2['score'] if endpoint2 is not None else 0.0
+        final_score = center_score
+        if use_score_fusion:
+            final_score = center_score * np.sqrt(max(endpoint1_score * endpoint2_score, 0.0))
+
+        dets.append({
+            'score': float(final_score),
+            'cx': center_x,
+            'cy': center_y,
+            'x1': float(x1.detach().cpu()),
+            'y1': float(y1.detach().cpu()),
+            'x2': float(x2.detach().cpu()),
+            'y2': float(y2.detach().cpu()),
+            'center_x': center_x,
+            'center_y': center_y,
+            'endpoint1_x': endpoint1['x'] if endpoint1 is not None else np.nan,
+            'endpoint1_y': endpoint1['y'] if endpoint1 is not None else np.nan,
+            'endpoint2_x': endpoint2['x'] if endpoint2 is not None else np.nan,
+            'endpoint2_y': endpoint2['y'] if endpoint2 is not None else np.nan,
+            'center_score': center_score,
+            'endpoint1_score': endpoint1_score,
+            'endpoint2_score': endpoint2_score,
+            'final_score': float(final_score),
+        })
+
+    return dets
+
+
 # =========================================================
 # 工具函数：GT 读取、IoU、匹配
 # =========================================================
@@ -411,7 +602,10 @@ def match_det_to_gt(det, gt_bbox=None, gt_center=None):
 # 读取数据
 # =========================================================
 df = pd.read_csv(CSV_PATH)
-test_df = df.reset_index(drop=True)
+test_df, split_path = filter_df_by_split(
+    df, args.split, args.split_dir, CSV_PATH)
+if split_path is not None:
+    print(f'Using split file: {split_path}')
 print(f'测试集样本数: {len(test_df)}')
 
 
@@ -452,6 +646,14 @@ for i, (_, row) in enumerate(test_df.iterrows()):
                 K=TOPK,
                 down_ratio=DOWN_RATIO,
                 use_score_fusion=args.use_keypoint_score_fusion
+            )
+        elif args.hm_mode == 'endpoint2':
+            dets = decode_endpoint2_output(
+                output,
+                K=TOPK,
+                down_ratio=DOWN_RATIO,
+                endpoint_search_radius=args.endpoint_search_radius,
+                use_score_fusion=args.use_endpoint_score_fusion
             )
         else:
             dets = decode_centernet_output(output, K=TOPK, down_ratio=DOWN_RATIO)
@@ -498,9 +700,15 @@ for i, (_, row) in enumerate(test_df.iterrows()):
             'head_y': det.get('head_y', np.nan),
             'tail_x': det.get('tail_x', np.nan),
             'tail_y': det.get('tail_y', np.nan),
+            'endpoint1_x': det.get('endpoint1_x', np.nan),
+            'endpoint1_y': det.get('endpoint1_y', np.nan),
+            'endpoint2_x': det.get('endpoint2_x', np.nan),
+            'endpoint2_y': det.get('endpoint2_y', np.nan),
             'center_score': det.get('center_score', det['score']),
             'head_score': det.get('head_score', np.nan),
             'tail_score': det.get('tail_score', np.nan),
+            'endpoint1_score': det.get('endpoint1_score', np.nan),
+            'endpoint2_score': det.get('endpoint2_score', np.nan),
             'final_score': det.get('final_score', det['score']),
         })
 

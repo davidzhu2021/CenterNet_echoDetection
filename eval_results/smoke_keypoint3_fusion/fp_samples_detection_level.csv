@@ -1,0 +1,2 @@
+sample_id,sig_type,sig_name,gt_class,pred_exists,top_score,matched,iou,loc_error,pred_cx,pred_cy,gt_cx,gt_cy
+4503,2,HFM,1,1,0.7437215514158013,0,,,128.0062255859375,127.95979309082031,,

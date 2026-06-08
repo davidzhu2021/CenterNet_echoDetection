@@ -1,2 +1,6 @@
 *
 !.gitignore
+!sonar/
+sonar/*
+!sonar/splits/
+!sonar/splits/*.txt
