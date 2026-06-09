@@ -3,6 +3,7 @@ from __future__ import division
 from __future__ import print_function
 from models.networks.swin import SwinCenterNet
 from models.networks.swin_fpn import SwinV2TinyFPNCenterNet
+from models.networks.swin_bifpn import SwinV2TinyBiFPNCenterNet
 import torchvision.models as models
 import torch
 import torch.nn as nn
@@ -22,6 +23,8 @@ _model_factory = {
   'swin_tiny': SwinCenterNet,
   'swin_tiny_fpn': SwinV2TinyFPNCenterNet,
   'swin_tiny_fpn_cnnstem': SwinV2TinyFPNCenterNet,
+  'swin_tiny_bifpn': SwinV2TinyBiFPNCenterNet,
+  'swin_tiny_bifpn_cnnstem': SwinV2TinyBiFPNCenterNet,
   'hourglass': get_large_hourglass_net,
 }
 
@@ -52,6 +55,28 @@ def create_model(arch, heads, head_conv):
       model_name='swinv2_tiny_window8_256',
       pretrained=True,
       fpn_channels=128,
+      use_cnn_stem=True,
+      in_chans=3
+    )
+
+  if arch == 'swin_tiny_bifpn':
+    return SwinV2TinyBiFPNCenterNet(
+      heads=heads,
+      head_conv=head_conv,
+      model_name='swinv2_tiny_window8_256',
+      pretrained=True,
+      bifpn_channels=128,
+      use_cnn_stem=False,
+      in_chans=3
+    )
+
+  if arch == 'swin_tiny_bifpn_cnnstem':
+    return SwinV2TinyBiFPNCenterNet(
+      heads=heads,
+      head_conv=head_conv,
+      model_name='swinv2_tiny_window8_256',
+      pretrained=True,
+      bifpn_channels=128,
       use_cnn_stem=True,
       in_chans=3
     )
